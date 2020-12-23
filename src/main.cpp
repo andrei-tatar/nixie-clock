@@ -5,6 +5,7 @@
 #include <WiFiUdp.h>
 #include <Timezone.h>
 #include <TimeLib.h>
+#include <Ticker.h>
 
 #define SCL D1
 #define SDA D2
@@ -23,6 +24,7 @@ NTPClient timeClient(ntpUDP, "pool.ntp.org");
 TimeChangeRule EEST = {"EEST", Last, Sun, Mar, 2, 180}; //DST
 TimeChangeRule EET = {"EET ", Last, Sun, Oct, 3, 120};  //standard
 Timezone timezone(EEST, EET);
+Ticker ticker;
 
 void setup()
 {
@@ -38,18 +40,19 @@ void setup()
   }
 
   timeClient.begin();
+
+  ticker.attach_ms(100, []() {
+    auto localTime = timezone.toLocal(timeClient.getEpochTime());
+
+    writeValue(H_ADDR, hour(localTime));
+    writeValue(M_ADDR, minute(localTime));
+    writeValue(S_ADDR, second(localTime));
+  });
 }
 
 void loop()
 {
   timeClient.update();
-
-  auto localTime = timezone.toLocal(timeClient.getEpochTime());
-
-  writeValue(H_ADDR, hour(localTime));
-  writeValue(M_ADDR, minute(localTime));
-  writeValue(S_ADDR, second(localTime));
-
   delay(1000);
 }
 
