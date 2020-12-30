@@ -6,6 +6,8 @@
 #include <Timezone.h>
 #include <TimeLib.h>
 #include <Ticker.h>
+#include <ESP8266WebServer.h>
+#include <uri/UriBraces.h>
 
 #define SCL D1
 #define SDA D2
@@ -14,46 +16,93 @@
 #define M_ADDR 0x22
 #define S_ADDR 0x23
 
-#define GTM_OFFSET 2
+#define SSID "ssid"
+#define PASS "pass"
 
 void writeValue(uint8_t i2cAddr, uint8_t value);
 
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "pool.ntp.org");
-
 TimeChangeRule EEST = {"EEST", Last, Sun, Mar, 2, 180}; //DST
 TimeChangeRule EET = {"EET ", Last, Sun, Oct, 3, 120};  //standard
 Timezone timezone(EEST, EET);
-Ticker ticker;
+Ticker displayTime, updateTime;
+ESP8266WebServer server(80);
+
+void showTime()
+{
+  auto localTime = timezone.toLocal(timeClient.getEpochTime());
+
+  writeValue(H_ADDR, hour(localTime));
+  writeValue(M_ADDR, minute(localTime));
+  writeValue(S_ADDR, second(localTime));
+}
 
 void setup()
 {
-  WiFi.begin("SSID", "pass");
   Wire.begin(SDA, SCL);
-
-  while (WiFi.status() != WL_CONNECTED)
-  {
-    writeValue(H_ADDR, rand());
-    writeValue(M_ADDR, rand());
-    writeValue(S_ADDR, rand());
-    delay(500);
-  }
+  WiFi.begin(SSID, PASS);
 
   timeClient.begin();
 
-  ticker.attach_ms(100, []() {
-    auto localTime = timezone.toLocal(timeClient.getEpochTime());
+  WiFi.onStationModeGotIP([](const WiFiEventStationModeGotIP &ip) { timeClient.update(); });
+  updateTime.attach(60, []() { timeClient.update(); });
+  displayTime.attach(.1, []() { showTime(); });
 
-    writeValue(H_ADDR, hour(localTime));
-    writeValue(M_ADDR, minute(localTime));
-    writeValue(S_ADDR, second(localTime));
+  server.on("/", HTTP_GET, []() {
+    server.send(200, "text/plain", "This is your nixie clock");
   });
+
+  server.on(UriBraces("/{}"), HTTP_GET, []() {
+    auto arg = server.pathArg(0);
+    if (arg.length() == 1 && arg[0] >= '0' && arg[0] <= '9')
+    {
+      displayTime.detach();
+      uint8_t digit = arg[0] - '0';
+      digit = digit * 10 + digit;
+      writeValue(H_ADDR, digit);
+      writeValue(M_ADDR, digit);
+      writeValue(S_ADDR, digit);
+    }
+    else if (arg.equalsIgnoreCase("count"))
+    {
+      writeValue(H_ADDR, 0);
+      writeValue(M_ADDR, 0);
+      writeValue(S_ADDR, 0);
+      static uint8_t digit;
+      digit = 1;
+
+      displayTime.attach(1, []() {
+        uint8_t d = digit * 10 + digit;
+
+        writeValue(H_ADDR, d);
+        writeValue(M_ADDR, d);
+        writeValue(S_ADDR, d);
+
+        digit++;
+        if (digit == 10)
+        {
+          digit = 0;
+        }
+      });
+    }
+    else if (arg.equalsIgnoreCase("time"))
+    {
+      displayTime.attach(.1, []() { showTime(); });
+    }
+    server.send(200, "text/plain", "OK");
+  });
+
+  server.onNotFound([]() {
+    server.send(404, "text/plain", "404: Not found");
+  });
+
+  server.begin();
 }
 
 void loop()
 {
-  timeClient.update();
-  delay(1000);
+  server.handleClient();
 }
 
 void writeValue(uint8_t i2cAddr, uint8_t value)
